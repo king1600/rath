@@ -339,6 +339,7 @@ ExprPtr parse_func(Parser& p, bool has_name) {
         if (p.consume(has_paren ? RParen : Arrow, true)) break;
         expr->args.push_back(new Const(p.consume(Ident)));
         if (p.consume(has_paren ? RParen : Arrow, true)) break;
+        p.consume(Comma);
     }
 
     p.consume(Arrow, true);
