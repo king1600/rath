@@ -1,3 +1,7 @@
+# Personal
+.vs
+build
+
 # Prerequisites
 *.d
 
