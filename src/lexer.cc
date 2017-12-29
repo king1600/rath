@@ -70,7 +70,7 @@ static inline bool is_ident(const char c) {
 // check if char is a whitespace
 static inline bool is_whitespace(const char c) {
     switch (c) {
-        case ' ': case '\n': case '\t': case '\r': return true;
+        case ' ': case '\t': case '\r': return true;
         default: return false;
     }
 }
@@ -181,6 +181,12 @@ static inline Token parse_grammar(Lexer& lexer) {
     return Token(type, token_str(lexer), start, lexer.lineno);
 }
 
+static inline Token parse_newline(Lexer& lexer) {
+    const std::size_t size = 1;
+    const std::size_t start = lexer.current++;
+    return Token(Newline, token_str(lexer), start, lexer.lineno++);
+}
+
 // parse next token
 Token Lexer::next() {
     // skip whitespace / lines
@@ -193,6 +199,8 @@ Token Lexer::next() {
         return Token(Eof);
 
     // parse the current token
+    if (lex_char(*this) == '\n')
+        return parse_newline(*this);
     if (lex_char(*this) == '"')
         return std::move(parse_string(*this));
     if (is_digit(lex_char(*this)))

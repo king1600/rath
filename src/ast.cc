@@ -28,7 +28,7 @@ static const char* token_type_map[] = {
     "None", "Eof", "Ident", "String", "Number",
     "Keyword", "Operator", "LParen", "RParen",
     "LCurly", "RCurly", "LBracket", "RBracket",
-    "Comma", "Arrow", "Semicolon"
+    "Comma", "Arrow", "Semicolon", "Newline"
 };
 
 const char* Token::type_str(TokenType type) {
@@ -132,6 +132,7 @@ void CaseCondition::print() const {
 void Case::print() const {
     std::printf("[Case ");
     if (condition) condition->print();
+    std::printf(" body="); if (body) body->print();
     std::printf("]");
 }
 

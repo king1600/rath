@@ -114,23 +114,7 @@ Function* parse_func(Parser& parser, bool has_name = true);
 ExprPtr parse_statement(Parser& parser, int precedence = 0);
 CaseCondition* parse_case_condition(Parser& parser, ExprPtr value);
 
-static inline void consume_end(Parser& p, bool maybe = false) {
-    p.consume(Semicolon, maybe);
-}
-
-ExprPtr Parser::parse(const std::string& code) {
-    current = lexer.feed(code).next();
-    ExprPtr expr = parse_expr(*this);
-
-    if (!current.is(Eof)) {
-        consume_end(*this);
-        Block* block = parse_block(*this);
-        block->body.insert(block->body.begin(), expr);
-        expr = block;
-    }
-
-    return expr;
-}
+#define skip_newlines while (p.consume(Newline, true))
 
 static inline bool expects_end(ExprPtr expr) {
     if (expr == nullptr)
@@ -150,6 +134,27 @@ static inline bool expects_end(ExprPtr expr) {
     }
 }
 
+static inline void consume_end(Parser& p, ExprPtr expr) {
+    if (expects_end(expr))
+        if (!p.consume(Newline, true))
+            p.consume(Semicolon);
+    skip_newlines;
+}
+
+ExprPtr Parser::parse(const std::string& code) {
+    current = lexer.feed(code).next();
+    ExprPtr expr = parse_expr(*this);
+
+    if (!current.is(Eof) && expr) {
+        consume_end(*this, expr);
+        Block* block = parse_block(*this);
+        block->body.insert(block->body.begin(), expr);
+        expr = block;
+    }
+
+    return expr;
+}
+
 Block* parse_block(Parser& p) {
     ExprPtr expr = nullptr;
     Block* block = new Block(p.current);
@@ -160,19 +165,20 @@ Block* parse_block(Parser& p) {
         if (p.consume(RCurly, true)) break;
 
         expr = parse_expr(p);
-        block->body.push_back(expr);
+        if (expr)
+            block->body.push_back(expr);
 
         if (p.consume(RCurly, true)) break;
         if (p.consume(Eof, true).is(Eof)) break;
 
-        if (expects_end(expr))
-            consume_end(p);
+        consume_end(p, expr);
     }
 
     return block;
 }
 
 ExprPtr parse_expr(Parser& p) {
+    skip_newlines;
     const Token& token = p.current;
 
     if (token.is(LCurly))
@@ -212,10 +218,11 @@ ExprPtr parse_statement(Parser& p, int precedence) {
             next_precedence++;
 
         if (token.text == "=")
-            p.error(token, "'=' only allowed in variable declaration %s", "");
+            throw p.error(token, "'=' only allowed in variable declaration %s", "");
         if (token.text == "...")
-            p.error(token, "Illegal varargs '...' operator%s", "");
+            throw p.error(token, "Illegal varargs '...' operator%s", "");
 
+        skip_newlines;
         rhs = parse_statement(p, next_precedence);
         lhs = new Binop(token, lhs, rhs);
     }
@@ -243,7 +250,9 @@ ExprPtr parse_positional(Parser& p) {
 
         case LParen: {
             Token paren_token = p.consume(LParen);
+            skip_newlines;
             ExprPtr value = parse_statement(p);
+            skip_newlines;
             p.consume(RParen);
             return value;
         }
@@ -299,8 +308,11 @@ Call* parse_call(Parser& p) {
 
     while (true) {
         if (p.consume(RParen, true)) break;
+        skip_newlines;
         call->args.push_back(parse_statement(p));
+        skip_newlines;
         if (p.consume(RParen, true)) break;
+        skip_newlines;
         p.consume(Comma);
     }
 
@@ -379,13 +391,17 @@ If* parse_if(Parser& p) {
 Switch* parse_switch(Parser& p) {
     Token token = p.consume(Keyword, KeywordSwitch);
     ExprPtr value = parse_statement(p);
-    Switch* switch_expr = new Switch(token);
+    Switch* switch_expr = new Switch(token, value);
 
     p.consume(Arrow, true);
     p.consume(LCurly);
+
     while (true) {
+        skip_newlines;
         if (p.consume(RCurly, true)) break;
+        skip_newlines;
         switch_expr->cases.push_back(parse_case(p, value));
+        skip_newlines;
         if (p.consume(RCurly, true)) break;
     }
 
@@ -394,8 +410,10 @@ Switch* parse_switch(Parser& p) {
 
 Case* parse_case(Parser& p, ExprPtr value) {
     Token token = p.consume(Keyword, KeywordCase);
+
     CaseCondition* cond = parse_case_condition(p, value);
     CaseCondition* and_cond = nullptr;
+    skip_newlines;
 
     while (p.consume(Keyword, KeywordCase, true)) {
         and_cond = parse_case_condition(p, value);
@@ -403,23 +421,30 @@ Case* parse_case(Parser& p, ExprPtr value) {
             cond->condition, and_cond->condition);
         cond->condition->token.text = "||";
         cond->value = and_cond->value;
+        skip_newlines;
     }
 
+    skip_newlines;
     p.consume(Arrow);
     ExprPtr body = parse_expr(p);
     return new Case(token, body, cond);
 }
 
 CaseCondition* parse_case_condition(Parser& p, ExprPtr value) {
+    bool is_direct;
     ExprPtr cond = nullptr;
     ExprPtr set_value = parse_statement(p);
 
     if (p.consume(Keyword, KeywordWhen, true)) {
+        is_direct = false;
         cond = parse_statement(p);
     } else {
+        is_direct = true;
         cond = new Binop(value->token, value, set_value);
         cond->token.text = "==";
     }
 
-    return new CaseCondition(set_value->token, set_value, cond);
+    CaseCondition* result = new CaseCondition(set_value->token, set_value, cond);
+    result->is_direct = is_direct;
+    return result;
 }

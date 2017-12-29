@@ -25,7 +25,8 @@ typedef enum {
     RBracket  = 12,
     Comma     = 13,
     Arrow     = 14,
-    Semicolon = 15
+    Semicolon = 15,
+    Newline   = 16
 } TokenType;
 
 // changeable keywords
@@ -160,13 +161,17 @@ public:
         return reinterpret_cast<T*>(this);
     }
 
+    inline bool is(ExprType t) const {
+        return type == t;
+    }
+
     inline ExprPtr ptr() {
         return this;
     }
 
     template <typename T>
     static void free(T** expr) {
-        delete *expr;
+        if (expr) delete *expr;
         *expr = nullptr;
     }
 
@@ -277,14 +282,34 @@ public:
     Block(const Token& token) : Expr(EBlock, token) {}
 };
 
+class Case;
+class Switch : public Expr {
+public:
+    void print() const;
+    ExprPtr value;
+    std::vector<Case*> cases;
+    ~Switch() { Expr::free(&value); Expr::free_list(cases); }
+    Switch(const Token& token, ExprPtr _value)
+        : Expr(ESwitch, token), value(_value) {}
+};
+
 class CaseCondition : public Expr {
 public:
     void print() const;
     ExprPtr value;
     ExprPtr condition;
-    ~CaseCondition() { Expr::free(&value); Expr::free(&condition); }
+    bool is_direct = true;
     CaseCondition(const Token& token, ExprPtr _value, ExprPtr _condition)
         : Expr(ECaseCond, token), value(_value), condition(_condition) {}
+    ~CaseCondition() {
+        Expr::free(&value);
+        if (is_direct && condition && condition->is(EBinop)) {
+            Binop* op = condition->as<Binop>();
+            op->left = nullptr;
+            op->right = nullptr;
+            delete op;
+        }
+    }
 };
 
 class Case : public Expr {
@@ -295,14 +320,6 @@ public:
     ~Case() { Expr::free(&body); Expr::free(&condition); }
     Case(const Token& token, ExprPtr _body, CaseCondition* _condition)
         : Expr(ECase, token), body(_body), condition(_condition) {}
-};
-
-class Switch : public Expr {
-public:
-    void print() const;
-    std::vector<Case*> cases;
-    ~Switch() { Expr::free_list(cases); }
-    Switch(const Token& token) : Expr(ESwitch, token) {}
 };
 
 class Function : public Expr {
