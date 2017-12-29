@@ -1,6 +1,10 @@
 # Personal
 .vs
 build
+*.txt
+rath
+app
+rvm
 
 # Prerequisites
 *.d

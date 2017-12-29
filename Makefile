@@ -3,7 +3,7 @@ SRC_DIR   := src
 BUILD_DIR := build
 INCLUDES  := -I.
 LDFLAGS   := 
-CFLAGS    := -g -std=c++17 -Wall -O0 -c -fPIC
+CFLAGS    := -g -std=c++11 -Wall -O0 -c -fPIC
 EXT       := cc
 BINARY    := rath
 

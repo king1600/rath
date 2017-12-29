@@ -1,12 +1,12 @@
 #pragma once
 
-#include <map>
-#include <any>
 #include <queue>
 #include <string>
+#include <memory>
+#include <cstdio>
 #include <vector>
 #include <cstdint>
-#include <stdexcept>
+#include <exception>
 
 // token types
 typedef enum {
@@ -28,7 +28,20 @@ typedef enum {
     Semicolon = 15
 } TokenType;
 
-const char* token_type_str(TokenType type);
+// changeable keywords
+#define KeywordSwitch "switch"
+#define KeywordCase "case"
+#define KeywordWhen "when"
+#define KeywordIf "if"
+#define KeywordElse "else"
+#define KeywordThen "then"
+#define KeywordDeclare "let"
+#define KeywordImport "open"
+#define KeywordReturn "return"
+#define KeywordFunction "func"
+#define KeywordNull "null"
+#define KeywordThis "this"
+#define KeywordRef "ref"
 
 // token object
 class Token {
@@ -38,30 +51,21 @@ public:
     std::size_t start;
     std::size_t lineno;
 
+    static const char* type_str(TokenType);
+
     Token() : Token(None) {}
     Token(TokenType _type) : type(_type) {}
-    Token(TokenType _type, const std::string& _text)
-        : type(_type), text(_text) {}
+    Token(TokenType _type, const std::string& _text,
+        const std::size_t& _start, const std::size_t& _lineno)
+        : type(_type), text(_text), start(_start), lineno(_lineno) {}
 
-    bool is(TokenType _type) const {
-        return type == _type;
-    }
-    bool is(const std::string& str) const {
-        return text == str;
-    }
-
-    operator bool() const {
-        switch (type) {
-            case None:
-            case Eof:
-                return false;
-            default:
-                return true;
-        }
-    }
+    operator bool() const;
+    std::string debug() const;
+    bool is(TokenType type) const;
+    bool is(const std::string& text) const;
 };
 
-// lexer tracking class
+// lexer interface
 class Lexer {
 public:
     std::string code;
@@ -73,197 +77,286 @@ public:
     Lexer& feed(const std::string& code);
 };
 
-// custom parser error
-class ParserError : public std::exception {
-private:
-    std::string message;
-public:
-    ParserError(const std::string& msg) : message(msg) {}
-    const char* what() const throw() { return message.c_str(); } ;
-};
-
 // count occurances of char in string
 std::size_t strcount(const std::string& str, const char c);
 
-// pythons string.format using sprintf
+// format a string using sprintf
 template <typename ...Args>
-std::string sformat(const std::string& format, Args... args);
+std::string sformat(const std::string& format, Args... args) {
+    std::size_t size = std::snprintf(nullptr, 0, format.c_str(), args...) + 1;
+    std::unique_ptr<char[]> buf(new char[size]);
+    std::snprintf(buf.get(), size, format.c_str(), args...);
+    return std::string(buf.get(), buf.get() + size - 1);
+}
 
-// raise a formatted parser error
-template <typename ... Args>
-ParserError parser_error(const Lexer& lexer,
-    const std::size_t& lineno, std::size_t start,
-    const std::string& fmt, Args... args);
+// Custome error object
+class ParserError : public std::exception {
+private:
+    std::string message;
 
-// expression types
+public:
+    ParserError(const std::string& msg) : message(msg) {}
+    const char* what() const throw() {
+        return message.c_str();
+    }
+
+    template <typename ...Args>
+    static ParserError from(
+        const Lexer& lexer,
+        std::size_t start,
+        const std::size_t& lineno,
+        const std::string& format,
+        Args... args)
+    {
+        // find start line of error
+        while (start > 0 && lexer.code[start] != '\n')
+            start--;
+
+        // find end line of error
+        std::size_t end = lexer.code.find('\n', start + 1);
+        if (end == std::string::npos) end = lexer.code.size();
+
+        // create error text
+        std::string err = sformat("Error on line %lu: %.*s\n  %s\n",
+            lineno, (int)(end - start), lexer.code.c_str() + start,
+            sformat(format, args...).c_str());
+        
+        // return parser error object
+        return ParserError(err);
+    }
+};
+
+////////////////////////////////////////////////////////
+
 typedef enum {
-    ExprUnop,
-    ExprBinop,
-    ExprConst,
-    ExprCall,
-    ExprFunction,
-    ExprReturn,
-    ExprBlock,
-    ExprIf,
-    ExprCase,
-    ExprSwitch,
-    ExprCaseCond,
+    EUnop     = 0,
+    EBinop    = 1,
+    EConst    = 2,
+    ECall     = 3,
+    EFunction = 4,
+    EReturn   = 5,
+    EBlock    = 6,
+    EIf       = 7,
+    ESwitch   = 8,
+    ECase     = 9,
+    ECaseCond = 10,
+    EAssign   = 11
 } ExprType;
 
-// base class expression
 #define ExprPtr Expr*
 class Expr {
 public:
     Token token;
     ExprType type;
-    Expr(ExprType _type, Token _token = Token(None))
+
+    static const char* type_str(ExprType);
+
+    virtual ~Expr() = default;
+    Expr(ExprType _type, const Token& _token)
         : token(_token), type(_type) {}
 
-    static void free(ExprPtr* e) {
-        delete *e;
-        *e = nullptr; 
+    template <typename T>
+    inline T* as() {
+        return reinterpret_cast<T*>(this);
     }
 
-    static void free_list(std::vector<ExprPtr>& list) {
-        for (ExprPtr e : list)
-            Expr::free(&e);
+    inline ExprPtr ptr() {
+        return this;
+    }
+
+    template <typename T>
+    static void free(T** expr) {
+        delete *expr;
+        *expr = nullptr;
+    }
+
+    template <typename T>
+    static void free_list(std::vector<T>& list) {
+        for (T expr : list) Expr::free(&expr);
         list.clear();
     }
+
+    virtual void print() const = 0;
 };
 
-/// ----------------------
-//  Expression definitions
-/// -----------------------
-
-#define SingleExpr(Name, Type)                             \
-    class Name : public Expr {                             \
-    public:                                                \
-        ExprPtr value;                                     \
-        ~Name() { Expr::free(&value); }                     \
-        Name(const Token& token, ExprPtr _value = nullptr) \
-            : Expr(Type, token), value(_value) {}          \
-    }
-
-#define ListExpr(Name, Type, list)                      \
-    class Name : public Expr {                          \
-    public:                                             \
-        std::string name;                               \
-        std::vector<ExprPtr> list;                      \
-        ~Name() { Expr::free_list(list); }              \
-        Name(const Token& token)                        \
-            : Expr(Type, token), name(token.text) {}    \
-    }
-
-#define DoubleExpr(Name, Type, first, second) \
-    class Name : public Expr {                \
-    public:                                   \
-        ExprPtr first;                        \
-        ExprPtr second;                       \
-        ~Name() {                             \
-            Expr::free(&first);               \
-            Expr::free(&second);              \
-        }                                     \
-        Name(const Token& token,              \
-            ExprPtr _arg1 = nullptr,          \
-            ExprPtr _arg2 = nullptr)          \
-            : Expr(Type, token),              \
-            first(_arg1), second(_arg2) {}    \
-    }
-
-SingleExpr(Unop, ExprUnop);
-
-DoubleExpr(Binop, ExprBinop, left, right);
-
-SingleExpr(Return, ExprReturn);
-
-ListExpr(Call, ExprCall, args);
-
-ListExpr(Block, ExprBlock, body);
-
-ListExpr(Switch, ExprSwitch, cases);
-
-DoubleExpr(Case, ExprCase, body, condition);
-
-DoubleExpr(CaseCondition, ExprCaseCond, value, condition);
-
-// constant expression types
 typedef enum {
-    ConstInt,
-    ConstNull,
-    ConstThis,
-    ConstFloat,
-    ConstIdent,
-    ConstString
-} ConstType;
+    EConstInt    = 0,
+    EConstFloat  = 1,
+    EConstString = 2,
+    EConstIdent  = 3,
+    EConstNull   = 4,
+    EConstThis   = 5
+} ConstExprType;
 
 class Const : public Expr {
 public:
-    ConstType const_type;
-    std::any value;
-    Const(const Token& token);
+    void print() const;
+    ConstExprType const_type;
+    Const(const Token& token, ConstExprType type)
+        : Expr(EConst, token), const_type(type) {}
+
+    static const char* type_str(ConstExprType type);
+};
+
+class ConstInt : public Const {
+public:
+    void print() const;
+    std::uint64_t value;
+    ConstInt(const Token& token, const std::uint64_t& _value)
+        : Const(token, EConstInt), value(_value) {}
+};
+
+class ConstFloat : public Const {
+public:
+    void print() const;
+    double value;
+    ConstFloat(const Token& token, const double& _value)
+        : Const(token, EConstFloat), value(_value) {}
+};
+
+class ConstString : public Const {
+public:
+    void print() const;
+    std::string value;
+    ConstString(const Token& token, const std::string& _value)
+        : Const(token, EConstString), value(_value) {}
+};
+
+class ConstIdent : public Const {
+public:
+    void print() const;
+    bool is_pack;
+    std::string value;
+    ConstIdent(const Token& token, const bool& pack, const std::string& _value)
+        : Const(token, EConstIdent), is_pack(pack), value(_value) {}
+};
+
+class Unop : public Expr {
+public:
+    void print() const;
+    ExprPtr value;
+    ~Unop() { Expr::free(&value); }
+    Unop(const Token& token, ExprPtr _value)
+        : Expr(EUnop, token), value(_value) {}
+};
+
+class Binop : public Expr {
+public:
+    void print() const;
+    ExprPtr left;
+    ExprPtr right;
+    ~Binop() { Expr::free(&left); Expr::free(&right); }
+    Binop(const Token& token, ExprPtr _left, ExprPtr _right)
+        : Expr(EBinop, token), left(_left), right(_right) {}
+};
+
+class Return : public Expr {
+public:
+    void print() const;
+    ExprPtr value;
+    ~Return() { Expr::free(&value); }
+    Return(const Token& token, ExprPtr _value)
+        : Expr(EReturn, token), value(_value) {}
+};
+
+class Call : public Expr {
+public:
+    void print() const;
+    std::string name;
+    std::vector<ExprPtr> args;
+    ~Call() { Expr::free_list(args); }
+    Call(const Token& token, const std::string& _name)
+        : Expr(ECall, token), name(_name) {}
+};
+
+class Block : public Expr {
+public:
+    void print() const;
+    std::vector<ExprPtr> body;
+    ~Block() { Expr::free_list(body); }
+    Block(const Token& token) : Expr(EBlock, token) {}
+};
+
+class CaseCondition : public Expr {
+public:
+    void print() const;
+    ExprPtr value;
+    ExprPtr condition;
+    ~CaseCondition() { Expr::free(&value); Expr::free(&condition); }
+    CaseCondition(const Token& token, ExprPtr _value, ExprPtr _condition)
+        : Expr(ECaseCond, token), value(_value), condition(_condition) {}
+};
+
+class Case : public Expr {
+public:
+    void print() const;
+    ExprPtr body;
+    CaseCondition* condition;
+    ~Case() { Expr::free(&body); Expr::free(&condition); }
+    Case(const Token& token, ExprPtr _body, CaseCondition* _condition)
+        : Expr(ECase, token), body(_body), condition(_condition) {}
+};
+
+class Switch : public Expr {
+public:
+    void print() const;
+    std::vector<Case*> cases;
+    ~Switch() { Expr::free_list(cases); }
+    Switch(const Token& token) : Expr(ESwitch, token) {}
 };
 
 class Function : public Expr {
 public:
+    void print() const;
     ExprPtr body;
     std::string name;
-    std::vector<ExprPtr> args;
+    std::vector<ConstIdent*> args;
+    ~Function() { Expr::free(&body); Expr::free_list(args); }
+    Function(const Token& token, const std::string& _name)
+        : Expr(EFunction, token), name(_name) {}
+};
 
-    ~Function() {
-        Expr::free(&body);
-        Expr::free_list(args);
-    }
-
-    Function(const Token& token,
-        const std::string& _name,
-        ExprPtr _body = nullptr)
-        : Expr(ExprFunction, token),
-        body(_body), name(_name) {}
+class Assign : public Expr {
+public:
+    void print() const;
+    bool is_ref;
+    ExprPtr value;
+    std::vector<ConstIdent*> vars;
+    ~Assign() { Expr::free(&value); Expr::free_list(vars); }
+    Assign(const Token& token, const bool& ref, ExprPtr _value)
+        : Expr(EAssign, token), is_ref(ref), value(_value) {}
 };
 
 class If : public Expr {
 public:
+    void print() const;
     ExprPtr body;
-    ExprPtr expr_else;
+    ExprPtr else_body;
     ExprPtr condition;
-
-    ~If() {
-        Expr::free(&expr_else);
-        Expr::free(&condition);
-        Expr::free(&body);
-    }
-
-    If(const Token& token,
-        ExprPtr _else = nullptr,
-        ExprPtr _cond = nullptr,
-        ExprPtr _body = nullptr)
-        : Expr(ExprIf, token),
-        body(_body), expr_else(_else), condition(_cond) {}
+    ~If() { Expr::free(&body); Expr::free(&else_body); Expr::free(&condition); }
+    If(const Token& token, ExprPtr x, ExprPtr y, ExprPtr z)
+        : Expr(EIf, token), body(x), else_body(y), condition(z) {}
 };
-
-/// Parser definition
 
 class Parser {
 private:
+    Lexer lexer;
+    std::queue<Token> peeks;
     Token consume_error(TokenType, const std::string&, bool, bool);
 
 public:
-    Lexer lexer;
     Token current;
-    std::queue<Token> peeks;
 
-    Parser();
-
+    Parser() = default;
     Token next();
-
     Token peek();
-
     ExprPtr parse(const std::string& code);
 
+    Token consume(bool maybe = false);
     Token consume(TokenType, bool maybe = false);
     Token consume(const std::string&, bool maybe = false);
     Token consume(TokenType, const std::string&, bool maybe = false, bool has_type = true);
 
     template <typename ...Args>
-    ParserError error(const Token&, const std::string&, Args...);
+    ParserError error(const Token&, const std::string&, Args...) const;
 };
