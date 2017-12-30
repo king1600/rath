@@ -1,10 +1,5 @@
 #include "ast.hh"
 
-template <typename ...Args>
-ParserError Parser::error(const Token& token, const std::string& format, Args... args) const {
-    return ParserError::from(lexer, token.start, token.lineno, format, args...);
-}
-
 Token Parser::next() {
     if (!peeks.empty()) {
         Token token = std::move(peeks.front());
@@ -22,12 +17,9 @@ Token Parser::peek() {
 
 Token Parser::consume_error(TokenType type, const std::string& str, bool maybe, bool has_type) {
     if (maybe) return Token(None);
-    ParserError err = !has_type ?
-        error(current, "Expected %s, got %s",
-            str.c_str(), current.text.c_str()) :
-        error(current, "Expected %s, got %s",
-            Token::type_str(type), Token::type_str(current.type));
-    throw err;
+    !has_type ?
+        error(current, "Expected %s, got %s", str.c_str(), current.text.c_str()) :
+        error(current, "Expected %s, got %s", Token::type_str(type), Token::type_str(current.type));
     return Token(None);
 }
 
@@ -93,6 +85,8 @@ static inline int op_prec(const std::string& op) {
         return 8;
     if (op == "*" || op == "/" || op == "%")
         return 9;
+    if (op == ".")
+        return 10;
     return -1;
 }
 
@@ -141,8 +135,8 @@ static inline void consume_end(Parser& p, ExprPtr expr) {
     skip_newlines;
 }
 
-ExprPtr Parser::parse(const std::string& code) {
-    current = lexer.feed(code).next();
+ExprPtr Parser::parse(const std::string& filename, const std::string& code) {
+    current = lexer.feed(filename, code).next();
     ExprPtr expr = parse_expr(*this);
 
     if (!current.is(Eof) && expr) {
@@ -218,9 +212,9 @@ ExprPtr parse_statement(Parser& p, int precedence) {
             next_precedence++;
 
         if (token.text == "=")
-            throw p.error(token, "'=' only allowed in variable declaration %s", "");
+            p.error(token, "'=' only allowed in variable declaration %s", "");
         if (token.text == "...")
-            throw p.error(token, "Illegal varargs '...' operator%s", "");
+            p.error(token, "Illegal varargs '...' operator%s", "");
 
         skip_newlines;
         rhs = parse_statement(p, next_precedence);
@@ -264,8 +258,7 @@ ExprPtr parse_positional(Parser& p) {
                 return parse_switch(p);
             if (token.is(KeywordIf))
                 return parse_if(p);
-            throw p.error(token,
-                "Unexpected keyword '%s'", token.text.c_str());
+            p.error(token, "Unexpected keyword '%s'", token.text.c_str());
             return nullptr;
 
         default:
@@ -286,7 +279,7 @@ Const* parse_constant(Parser& p) {
             else if (token.text == KeywordThis)
                 return new Const(p.consume(), EConstThis);
             else
-                return new ConstIdent(p.consume(), false, token.text);
+                return new Var(p.consume(), 0, token.text);
             return nullptr;
 
         case Number:
@@ -320,26 +313,29 @@ Call* parse_call(Parser& p) {
 }
 
 Assign* parse_assign(Parser& p) {
-    Token token = p.consume(Keyword, KeywordDeclare);
-    bool is_ref = p.consume(Keyword, KeywordRef, true);
-    Assign* assign = new Assign(token, is_ref, nullptr);
+    int flags = 0;
+    Assign* assign = new Assign(p.consume(Keyword, KeywordDeclare), nullptr);
+    flags |= p.consume(Keyword, KeywordRef, true) ? Var::Flag::Ref : 0;
+    flags |= p.consume(Keyword, KeywordConst, true) ? Var::Flag::Const : 0;
 
-    bool is_pack;
-    Token var_name;
+    Token name;
+    int var_flag;
+    Var* variable;
 
     while (true) {
         if (p.consume(Operator, "=", true)) break;
-        is_pack = p.current.is(Ident) ? false : p.consume(Operator, "...");
-        var_name = p.consume(Ident);
-        assign->vars.push_back(new ConstIdent(var_name, is_pack, var_name.text));
+        var_flag = flags | (p.consume(Operator, "...", true) ? Var::Flag::Packed : 0);
+        name = p.consume(Ident);
+        variable = new Var(name, var_flag, name.text);
+        assign->vars.push_back(variable);
         if (p.consume(Operator, "=", true)) break;
         p.consume(Comma);
     }
 
     if (assign->vars.size() == 0)
-        throw p.error(assign->token, "No variable name provided%s", "");
-    if (assign->vars[0]->is_pack)
-        throw p.error(assign->token, "single variable declaraction does not need to be packed%s", "");
+        p.error(assign->token, "No variable name provided%s", "");
+    if (assign->vars[0]->flags & Var::Flag::Packed)
+        p.error(assign->token, "single variable declaraction does not need to be packed%s", "");
     
     assign->value = parse_statement(p);
     return assign;
@@ -350,15 +346,25 @@ Function* parse_func(Parser& p, bool has_name) {
     std::string name = has_name ? p.consume(Ident).text : "";
     Function* func = new Function(token, name);
 
-    bool is_pack;
+    Var* arg;
+    int flags;
     Token arg_name;
     bool has_paren = p.consume(LParen, true);
 
     while (true) {
         if (p.consume(has_paren ? RParen : Arrow, true)) break;
-        is_pack = p.current.is(Ident) ? false : p.consume(Operator, "...");
+
+        flags = 0;
+        flags |= p.consume(Keyword, KeywordRef, true) ? Var::Flag::Ref : 0;
+        flags |= p.consume(Keyword, KeywordConst, true) ? Var::Flag::Const : 0;
+        flags |= p.consume(Keyword, KeywordRef, true) ? Var::Flag::Ref : 0;
+        flags |= p.consume(Keyword, KeywordConst, true) ? Var::Flag::Const : 0;
+        flags |= p.consume(Operator, "...", true) ? Var::Flag::Packed : 0;
+
         arg_name = p.consume(Ident);
-        func->args.push_back(new ConstIdent(arg_name, is_pack, arg_name.text));
+        arg = new Var(arg_name, flags, arg_name.text);
+        func->args.push_back(arg);
+
         if (p.consume(has_paren ? RParen : Arrow, true)) break;
         p.consume(Comma);
     }

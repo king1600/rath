@@ -43,6 +43,7 @@ typedef enum {
 #define KeywordNull "null"
 #define KeywordThis "this"
 #define KeywordRef "ref"
+#define KeywordConst "const"
 
 // token object
 class Token {
@@ -70,12 +71,13 @@ public:
 class Lexer {
 public:
     std::string code;
+    std::string file;
     std::size_t lineno;
     std::size_t current;
 
     Lexer() = default;
     Token next();
-    Lexer& feed(const std::string& code);
+    Lexer& feed(const std::string& filename, const std::string& code);
 };
 
 // count occurances of char in string
@@ -92,10 +94,9 @@ std::string sformat(const std::string& format, Args... args) {
 
 // Custome error object
 class ParserError : public std::exception {
-private:
+public:
     std::string message;
 
-public:
     ParserError(const std::string& msg) : message(msg) {}
     const char* what() const throw() {
         return message.c_str();
@@ -105,22 +106,32 @@ public:
     static ParserError from(
         const Lexer& lexer,
         std::size_t start,
+        const std::string& filename,
         const std::size_t& lineno,
         const std::string& format,
         Args... args)
     {
         // find start line of error
-        while (start > 0 && lexer.code[start] != '\n')
+        while (start > 0 && lexer.code[start - 1] != '\n')
             start--;
-
+        
+        // get rid of beginning whitepace
+        parse_trim_front:
+        switch (lexer.code[start]) {
+            case ' ': case '\t': case '\r':
+                start++;
+                goto parse_trim_front;
+            default:
+                break;
+        }
         // find end line of error
-        std::size_t end = lexer.code.find('\n', start + 1);
+        std::size_t end = lexer.code.find('\n', start);
         if (end == std::string::npos) end = lexer.code.size();
 
         // create error text
-        std::string err = sformat("Error on line %lu: %.*s\n  %s\n",
-            lineno, (int)(end - start), lexer.code.c_str() + start,
-            sformat(format, args...).c_str());
+        std::string err = sformat("Error in %s:%lu:\n%.*s\n  > %s\n",
+            filename.c_str(), lineno, (int)(end - start),
+            lexer.code.c_str() + start, sformat(format, args...).c_str());
         
         // return parser error object
         return ParserError(err);
@@ -227,13 +238,20 @@ public:
         : Const(token, EConstString), value(_value) {}
 };
 
-class ConstIdent : public Const {
+class Var : public Const {
 public:
+    struct Flag {
+        static constexpr int 
+            Ref = 1 << 1,
+            Const = 1 << 2,
+            Packed = 1 << 3;
+    };
+
     void print() const;
-    bool is_pack;
-    std::string value;
-    ConstIdent(const Token& token, const bool& pack, const std::string& _value)
-        : Const(token, EConstIdent), is_pack(pack), value(_value) {}
+    int flags = 0;
+    std::string name;
+    Var(const Token& token, const int& _flags, const std::string& _name)
+        : Const(token, EConstIdent), flags(_flags), name(_name) {}
 };
 
 class Unop : public Expr {
@@ -327,7 +345,7 @@ public:
     void print() const;
     ExprPtr body;
     std::string name;
-    std::vector<ConstIdent*> args;
+    std::vector<Var*> args;
     ~Function() { Expr::free(&body); Expr::free_list(args); }
     Function(const Token& token, const std::string& _name)
         : Expr(EFunction, token), name(_name) {}
@@ -336,12 +354,11 @@ public:
 class Assign : public Expr {
 public:
     void print() const;
-    bool is_ref;
     ExprPtr value;
-    std::vector<ConstIdent*> vars;
+    std::vector<Var*> vars;
     ~Assign() { Expr::free(&value); Expr::free_list(vars); }
-    Assign(const Token& token, const bool& ref, ExprPtr _value)
-        : Expr(EAssign, token), is_ref(ref), value(_value) {}
+    Assign(const Token& token, ExprPtr _value)
+        : Expr(EAssign, token), value(_value) {}
 };
 
 class If : public Expr {
@@ -364,10 +381,10 @@ private:
 public:
     Token current;
 
-    Parser() = default;
+    Parser() {};
     Token next();
     Token peek();
-    ExprPtr parse(const std::string& code);
+    ExprPtr parse(const std::string& filename, const std::string& code);
 
     Token consume(bool maybe = false);
     Token consume(TokenType, bool maybe = false);
@@ -375,5 +392,7 @@ public:
     Token consume(TokenType, const std::string&, bool maybe = false, bool has_type = true);
 
     template <typename ...Args>
-    ParserError error(const Token&, const std::string&, Args...) const;
+    void error(const Token& token, const std::string& format, Args... args) {
+        throw ParserError::from(lexer, token.start, lexer.file, token.lineno, format, args...);
+    }
 };

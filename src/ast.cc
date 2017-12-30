@@ -43,7 +43,7 @@ std::string Token::debug() const {
 ///////////////////////////////////////////////////////////////
 
 static const char* expr_const_type_map[] = {
-    "Int", "Float", "String", "Ident", 
+    "Int", "Float", "String", "Var", 
     "Null", "This"
 };
 
@@ -78,12 +78,16 @@ void ConstFloat::print() const {
 }
 
 void ConstString::print() const {
-    std::printf("[%s %s]", Const::type_str(const_type), value.c_str());
+    std::printf("[%s \"%s\"]", Const::type_str(const_type), value.c_str());
 }
 
-void ConstIdent::print() const {
-    std::printf("[%s %s%s]", Const::type_str(const_type),
-        is_pack ? "..." : "", value.c_str());
+void Var::print() const {
+    std::printf("[%s%s%s%s%s]",
+        Const::type_str(const_type),
+        flags & Flag::Const ? " const " : "",
+        flags & Flag::Ref ? " ref " : "",
+        flags & Flag::Const ? " ... " : " ",
+        name.c_str());
 }
 
 void Unop::print() const {
@@ -158,7 +162,7 @@ void Function::print() const {
 }
 
 void Assign::print() const {
-    std::printf("[Assign%svars={", is_ref ? " ref " : " ");
+    std::printf("[Assign vars={");
     for (std::size_t i = 0; i < vars.size(); i++) {
         if (vars[i]) vars[i]->print();
         if (i < vars.size() - 1) std::printf(", ");

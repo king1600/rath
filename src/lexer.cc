@@ -4,9 +4,10 @@
 #include <cstring>
 #include <utility>
 
-Lexer& Lexer::feed(const std::string& code) {
+Lexer& Lexer::feed(const std::string& filename, const std::string& code) {
     lineno = 1;
     current = 0;
+    file = filename;
     this->code = code;
     return *this;
 }
@@ -20,8 +21,8 @@ static const char* OperatorChars = "+-*/%.:=<>|&^";
 static const std::vector<std::string> Keywords = {
     KeywordSwitch, KeywordCase, KeywordWhen,
     KeywordIf, KeywordElse, KeywordThen,
-    KeywordDeclare, KeywordImport, KeywordRef,
-    KeywordReturn, KeywordFunction
+    KeywordDeclare, KeywordConst, KeywordRef,
+    KeywordImport, KeywordReturn, KeywordFunction
 };
 
 // language operators
@@ -145,7 +146,7 @@ static inline Token parse_number(Lexer& lexer) {
     read_until(lexer, is_numeric)
     std::string text = token_str(lexer);
     if (strcount(text, '.') > 1)
-        throw ParserError::from(lexer, start, lineno,
+        throw ParserError::from(lexer, start, lexer.file, lineno,
             "Invalid float literal %s", text.c_str());
     return Token(Number, text, start, lineno);
 }
@@ -157,7 +158,7 @@ static inline Token parse_operator(Lexer& lexer) {
     std::string text = token_str(lexer);
     if (text == "->") type = Arrow;
     if (!is_from(Operators, text))
-        throw ParserError::from(lexer, start, lineno,
+        throw ParserError::from(lexer, start, lexer.file, lineno,
             "Invalid operator %s", text.c_str());
     return Token(type, text, start, lineno);
 }
@@ -213,7 +214,7 @@ Token Lexer::next() {
         return std::move(parse_grammar(*this));
 
     // invalid character found
-    throw ParserError::from(*this, current, lineno,
+    throw ParserError::from(*this, current, file, lineno,
         "Invalid char: %c", code[current]);
 
     return Token();
